@@ -11,6 +11,26 @@ from models import MLPPlanner, TransformerPlanner, CNNPlanner, save_model, load_
 from metrics import PlannerMetric
 
 
+def weighted_mse_loss(preds, labels, labels_mask, alpha=0.3):
+    """
+    Computes a weighted MSE where 'alpha' is the weight for the longitudinal
+    component, and (1 - alpha) is the weight for the lateral component.
+    """
+    error = (preds - labels) ** 2
+    error_masked = error * labels_mask[..., None].float()
+
+    # Sum across batch and waypoints
+    error_sum = error_masked.sum(dim=(0, 1))  # shape: (2,)
+    count = labels_mask.sum()
+
+    # Separate MSE for longitudinal (index=0) and lateral (index=1)
+    longitudinal_mse = error_sum[0] / count
+    lateral_mse = error_sum[1] / count
+
+    # Weighted combination
+    return alpha * longitudinal_mse + (1 - alpha) * lateral_mse
+
+
 def train_planner(
     dataset_path: str = "drive_data",
     num_epochs: int = 20,
@@ -60,7 +80,7 @@ def train_planner(
 
             # Loss logic
             if isinstance(model, TransformerPlanner):
-                loss = metric.weighted_mse_loss(output, target, mask, alpha=0.3)
+                loss = weighted_mse_loss(output, target, mask, alpha=0.3)
             else:
                 loss = criterion(output, target)
                 loss = (loss * mask.unsqueeze(-1)).mean()
@@ -90,7 +110,7 @@ def train_planner(
                     output = model(track_left=track_left, track_right=track_right)
 
                 if isinstance(model, TransformerPlanner):
-                    loss = metric.weighted_mse_loss(output, target, mask, alpha=0.3)
+                    loss = weighted_mse_loss(output, target, mask, alpha=0.3)
                 else:
                     loss = criterion(output, target)
                     loss = (loss * mask.unsqueeze(-1)).mean()
