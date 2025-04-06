@@ -54,16 +54,20 @@ class MLPPlanner(nn.Module):
 import torch
 import torch.nn as nn
 
+import torch
+import torch.nn as nn
+
+
 class TransformerPlanner(nn.Module):
     def __init__(
         self,
         n_track: int = 10,
         n_waypoints: int = 3,
-        d_model: int = 64,
-        nhead: int = 4,
-        num_encoder_layers: int = 2,
-        num_decoder_layers: int = 2,
-        dim_feedforward: int = 128,
+        d_model: int = 128,              # Increased from 64
+        nhead: int = 8,                  # Increased from 4
+        num_encoder_layers: int = 3,     # Increased from 2
+        num_decoder_layers: int = 3,     # Increased from 2
+        dim_feedforward: int = 256,      # Increased from 128
         dropout: float = 0.1,
     ):
         super().__init__()
@@ -72,12 +76,16 @@ class TransformerPlanner(nn.Module):
         self.n_waypoints = n_waypoints
         self.d_model = d_model
 
-        # Updated: input is [left, right, diff] = 6D → d_model
+        # Input: [left, right, diff] = 6D → project to d_model
         self.input_proj = nn.Linear(6, d_model)
 
-        self.query_embed = nn.Embedding(n_waypoints, d_model)
-        self.positional_encoding = nn.Parameter(torch.randn(n_track, d_model))  # Now track shape is (B, N, 6)
+        # Positional encoding for track points
+        self.positional_encoding = nn.Parameter(torch.randn(n_track, d_model))
 
+        # Learnable queries for decoder (1 query per waypoint)
+        self.query_embed = nn.Embedding(n_waypoints, d_model)
+
+        # Standard transformer encoder-decoder
         self.transformer = nn.Transformer(
             d_model=d_model,
             nhead=nhead,
@@ -88,6 +96,7 @@ class TransformerPlanner(nn.Module):
             batch_first=True,
         )
 
+        # Final projection to 2D waypoints (x, z)
         self.output_proj = nn.Linear(d_model, 2)
 
     def forward(
@@ -98,33 +107,35 @@ class TransformerPlanner(nn.Module):
     ) -> torch.Tensor:
         B, N, _ = track_left.shape
 
-        # Normalize both left and right by the origin
+        # Normalize tracks relative to origin (first left point)
         origin = track_left[:, 0:1, :]  # (B, 1, 2)
         track_left = track_left - origin
         track_right = track_right - origin
 
-        # Add relative difference
+        # Relative feature between left and right
         track_diff = track_left - track_right
 
-        # Stack: (B, N, 6)
+        # Concatenate features → (B, N, 6)
         track = torch.cat([track_left, track_right, track_diff], dim=-1)
 
-        # Project to d_model → (B, N, d_model)
+        # Project to d_model
         track_feat = self.input_proj(track)
 
-        # Add positional encodings
-        pos_enc = self.positional_encoding[: track_feat.shape[1]]
+        # Add learnable positional encoding
+        pos_enc = self.positional_encoding[:N]
         track_feat = track_feat + pos_enc[None, :, :]
 
-        # Prepare decoder queries → (B, n_waypoints, d_model)
-        query_embed = self.query_embed.weight.unsqueeze(0).repeat(B, 1, 1)
+        # Prepare decoder query embeddings → (B, n_waypoints, d_model)
+        query_embed = self.query_embed.weight.unsqueeze(0).expand(B, -1, -1)
 
-        # Run transformer
+        # Encode track context
         memory = self.transformer.encoder(track_feat)
-        out = self.transformer.decoder(query_embed, memory)
 
-        # Project to (x, z) → (B, n_waypoints, 2)
-        waypoints = self.output_proj(out)
+        # Decode waypoints
+        decoded = self.transformer.decoder(query_embed, memory)
+
+        # Final projection to 2D waypoints
+        waypoints = self.output_proj(decoded)  # (B, n_waypoints, 2)
 
         return waypoints
 
