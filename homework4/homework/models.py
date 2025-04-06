@@ -142,10 +142,16 @@ class CNNPlanner(nn.Module):
             nn.Linear(128, num_waypoints * 2),
         )
 
-    def forward(self, x):
-        x = self.features(x)
+    # def forward(self, x):
+    #     x = self.features(x)
+    #     x = self.regressor(x)
+    #     return x.view(-1, self.num_waypoints, 2)
+    
+    def forward(self, image: torch.Tensor, **kwargs):
+        x = self.features(image)
         x = self.regressor(x)
         return x.view(-1, self.num_waypoints, 2)
+
 
 
 
