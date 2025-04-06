@@ -50,6 +50,7 @@ class MLPPlanner(nn.Module):
         return out.view(-1, self.n_waypoints, 2)
 
 
+
 import torch
 import torch.nn as nn
 
@@ -71,14 +72,12 @@ class TransformerPlanner(nn.Module):
         self.n_waypoints = n_waypoints
         self.d_model = d_model
 
-        # Input projection: (x, z) → d_model
-        self.input_proj = nn.Linear(2, d_model)
+        # Updated: input is [left, right, diff] = 6D → d_model
+        self.input_proj = nn.Linear(6, d_model)
 
-        # Positional encodings
         self.query_embed = nn.Embedding(n_waypoints, d_model)
-        self.positional_encoding = nn.Parameter(torch.randn(n_track * 2, d_model))
+        self.positional_encoding = nn.Parameter(torch.randn(n_track, d_model))  # Now track shape is (B, N, 6)
 
-        # Transformer
         self.transformer = nn.Transformer(
             d_model=d_model,
             nhead=nhead,
@@ -86,24 +85,31 @@ class TransformerPlanner(nn.Module):
             num_decoder_layers=num_decoder_layers,
             dim_feedforward=dim_feedforward,
             dropout=dropout,
-            batch_first=True,  # Enables (B, N, D) input format
+            batch_first=True,
         )
 
-        # Output projection to (x, z) coordinates
         self.output_proj = nn.Linear(d_model, 2)
 
     def forward(
         self,
-        track_left: torch.Tensor,   # (B, n_track, 2)
-        track_right: torch.Tensor,  # (B, n_track, 2)
+        track_left: torch.Tensor,   # (B, N, 2)
+        track_right: torch.Tensor,  # (B, N, 2)
         **kwargs,
     ) -> torch.Tensor:
         B, N, _ = track_left.shape
 
-        # Concatenate left and right tracks → (B, 2N, 2)
-        track = torch.cat([track_left, track_right], dim=1)
+        # Normalize both left and right by the origin
+        origin = track_left[:, 0:1, :]  # (B, 1, 2)
+        track_left = track_left - origin
+        track_right = track_right - origin
 
-        # Project to d_model → (B, 2N, d_model)
+        # Add relative difference
+        track_diff = track_left - track_right
+
+        # Stack: (B, N, 6)
+        track = torch.cat([track_left, track_right, track_diff], dim=-1)
+
+        # Project to d_model → (B, N, d_model)
         track_feat = self.input_proj(track)
 
         # Add positional encodings
@@ -121,8 +127,6 @@ class TransformerPlanner(nn.Module):
         waypoints = self.output_proj(out)
 
         return waypoints
-
-
 
 
 class CNNPlanner(nn.Module):
