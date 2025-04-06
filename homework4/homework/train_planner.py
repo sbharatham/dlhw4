@@ -43,14 +43,14 @@ def train_planner(
 
         for batch in train_loader:
             img = batch["image"].to(device)
+            track_right = batch["track_right"].to(device)
             target = batch["waypoints"].to(device)
             mask = batch["waypoints_mask"].to(device)
 
             optimizer.zero_grad()
-            output = model(img)  # (B, N, 2)
-
-            loss = criterion(output, target)  # (B, N, 2)
-            loss = (loss * mask.unsqueeze(-1)).mean()  # Masked MSE
+            output = model(img, track_right)  # 🟢 FIXED
+            loss = criterion(output, target)
+            loss = (loss * mask.unsqueeze(-1)).mean()
             loss.backward()
             optimizer.step()
 
@@ -61,13 +61,15 @@ def train_planner(
         # Validation
         model.eval()
         val_loss = 0.0
+
         with torch.no_grad():
             for batch in val_loader:
                 img = batch["image"].to(device)
+                track_right = batch["track_right"].to(device)
                 target = batch["waypoints"].to(device)
                 mask = batch["waypoints_mask"].to(device)
 
-                output = model(img)
+                output = model(img, track_right)  # 🟢 FIXED
                 loss = criterion(output, target)
                 loss = (loss * mask.unsqueeze(-1)).mean()
                 val_loss += loss.item()
