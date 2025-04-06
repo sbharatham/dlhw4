@@ -55,11 +55,11 @@ class TransformerPlanner(nn.Module):
         self,
         n_track: int = 10,
         n_waypoints: int = 3,
-        d_model: int = 128,
+        d_model: int = 64,
         nhead: int = 4,
         num_encoder_layers: int = 2,
         num_decoder_layers: int = 2,
-        dim_feedforward: int = 256,
+        dim_feedforward: int = 128,
         dropout: float = 0.1,
     ):
         super().__init__()
@@ -68,16 +68,14 @@ class TransformerPlanner(nn.Module):
         self.n_waypoints = n_waypoints
         self.d_model = d_model
 
-        # CoordConv input: (x, z, x-z) → d_model
-        self.input_proj = nn.Linear(3, d_model)
+        # Input projection: (x, z) → d_model
+        self.input_proj = nn.Linear(2, d_model)
 
-        # Learnable positional encoding
+        # Positional encodings
+        self.query_embed = nn.Embedding(n_waypoints, d_model)
         self.positional_encoding = nn.Parameter(torch.randn(n_track * 2, d_model))
 
-        # LayerNorm for better stability after encoding
-        self.norm = nn.LayerNorm(d_model)
-
-        # Transformer encoder-decoder
+        # Transformer
         self.transformer = nn.Transformer(
             d_model=d_model,
             nhead=nhead,
@@ -85,40 +83,41 @@ class TransformerPlanner(nn.Module):
             num_decoder_layers=num_decoder_layers,
             dim_feedforward=dim_feedforward,
             dropout=dropout,
-            batch_first=True,
+            batch_first=True,  # Enables (B, N, D) input format
         )
 
-        # Learnable decoder queries
-        self.query_embed = nn.Embedding(n_waypoints, d_model)
+        # Output projection to (x, z) coordinates
+        self.output_proj = nn.Linear(d_model, 2)
 
-        # Residual MLP for final prediction
-        self.output_proj = nn.Sequential(
-            nn.Linear(d_model, d_model),
-            nn.ReLU(),
-            nn.Linear(d_model, 2),
-        )
-
-    def forward(self, track_left: torch.Tensor, track_right: torch.Tensor, **kwargs) -> torch.Tensor:
+    def forward(
+        self,
+        track_left: torch.Tensor,   # (B, n_track, 2)
+        track_right: torch.Tensor,  # (B, n_track, 2)
+        **kwargs,
+    ) -> torch.Tensor:
         B, N, _ = track_left.shape
 
-        # Stack track boundaries (x, z)
-        track = torch.cat([track_left, track_right], dim=1)  # (B, 2N, 2)
-        s = (track[:, :, 0] - track[:, :, 1]).unsqueeze(-1)  # (B, 2N, 1) → x - z as heuristic
-        track_input = torch.cat([track, s], dim=-1)  # (B, 2N, 3)
+        # Concatenate left and right tracks → (B, 2N, 2)
+        track = torch.cat([track_left, track_right], dim=1)
 
-        # Project and add positional encoding
-        track_feat = self.input_proj(track_input)  # (B, 2N, d_model)
-        pos_enc = self.positional_encoding[: track_feat.shape[1]]  # (2N, d_model)
-        track_feat = self.norm(track_feat + pos_enc[None, :, :])  # Add + normalize
+        # Project to d_model → (B, 2N, d_model)
+        track_feat = self.input_proj(track)
 
-        # Queries for decoder (B, n_waypoints, d_model)
+        # Add positional encodings
+        pos_enc = self.positional_encoding[: track_feat.shape[1]]
+        track_feat = track_feat + pos_enc[None, :, :]
+
+        # Prepare decoder queries → (B, n_waypoints, d_model)
         query_embed = self.query_embed.weight.unsqueeze(0).repeat(B, 1, 1)
 
-        # Run Transformer
+        # Run transformer
         memory = self.transformer.encoder(track_feat)
-        out = self.transformer.decoder(query_embed, memory)  # (B, n_waypoints, d_model)
+        out = self.transformer.decoder(query_embed, memory)
 
-        return self.output_proj(out)  # (B, n_waypoints, 2)
+        # Project to (x, z) → (B, n_waypoints, 2)
+        waypoints = self.output_proj(out)
+
+        return waypoints
 
 
 
