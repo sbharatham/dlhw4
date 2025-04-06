@@ -8,7 +8,8 @@ from torch.utils.data import DataLoader
 
 from datasets.road_dataset import load_data
 from models import TransformerPlanner, save_model
-from metrics import AccuracyMetric
+from metrics import PlannerMetric
+
 
 def train_planner(
     dataset_path: str = "drive_data",
