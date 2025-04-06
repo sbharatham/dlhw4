@@ -23,6 +23,15 @@ class MLPPlanner(nn.Module):
 
         self.n_track = n_track
         self.n_waypoints = n_waypoints
+        input_dim = n_track * 4  # (n_track * 2 coords) * 2 sides
+
+        self.model = nn.Sequential(
+            nn.Linear(input_dim, 128),
+            nn.ReLU(),
+            nn.Linear(128, 64),
+            nn.ReLU(),
+            nn.Linear(64, n_waypoints * 2)
+        )
 
     def forward(
         self,
@@ -33,9 +42,6 @@ class MLPPlanner(nn.Module):
         """
         Predicts waypoints from the left and right boundaries of the track.
 
-        During test time, your model will be called with
-        model(track_left=..., track_right=...), so keep the function signature as is.
-
         Args:
             track_left (torch.Tensor): shape (b, n_track, 2)
             track_right (torch.Tensor): shape (b, n_track, 2)
@@ -43,7 +49,11 @@ class MLPPlanner(nn.Module):
         Returns:
             torch.Tensor: future waypoints with shape (b, n_waypoints, 2)
         """
-        raise NotImplementedError
+        x = torch.cat([track_left, track_right], dim=-1)  # (b, n_track, 4)
+        x = x.view(x.size(0), -1)  # (b, n_track * 4)
+        out = self.model(x)  # (b, n_waypoints * 2)
+        return out.view(-1, self.n_waypoints, 2)  # (b, n_waypoints, 2)
+
 
 
 import torch
