@@ -82,30 +82,33 @@ class TransformerPlanner(nn.Module):
         raise NotImplementedError
 
 
-class CNNPlanner(torch.nn.Module):
-    def __init__(
-        self,
-        n_waypoints: int = 3,
-    ):
+class CNNPlanner(nn.Module):
+    def __init__(self, in_channels=3, num_waypoints=3):
         super().__init__()
+        self.num_waypoints = num_waypoints
 
-        self.n_waypoints = n_waypoints
+        self.features = nn.Sequential(
+            nn.Conv2d(in_channels, 16, kernel_size=5, stride=2, padding=2),  # (B, 16, H/2, W/2)
+            nn.ReLU(),
+            nn.Conv2d(16, 32, kernel_size=5, stride=2, padding=2),  # (B, 32, H/4, W/4)
+            nn.ReLU(),
+            nn.Conv2d(32, 64, kernel_size=5, stride=2, padding=2),  # (B, 64, H/8, W/8)
+            nn.ReLU(),
+            nn.AdaptiveAvgPool2d((4, 4)),  # (B, 64, 4, 4)
+        )
 
-        self.register_buffer("input_mean", torch.as_tensor(INPUT_MEAN), persistent=False)
-        self.register_buffer("input_std", torch.as_tensor(INPUT_STD), persistent=False)
+        self.regressor = nn.Sequential(
+            nn.Flatten(),
+            nn.Linear(64 * 4 * 4, 128),
+            nn.ReLU(),
+            nn.Linear(128, num_waypoints * 2),
+        )
 
-    def forward(self, image: torch.Tensor, **kwargs) -> torch.Tensor:
-        """
-        Args:
-            image (torch.FloatTensor): shape (b, 3, h, w) and vals in [0, 1]
+    def forward(self, x):
+        x = self.features(x)
+        x = self.regressor(x)
+        return x.view(-1, self.num_waypoints, 2)
 
-        Returns:
-            torch.FloatTensor: future waypoints with shape (b, n, 2)
-        """
-        x = image
-        x = (x - self.input_mean[None, :, None, None]) / self.input_std[None, :, None, None]
-
-        raise NotImplementedError
 
 
 MODEL_FACTORY = {
