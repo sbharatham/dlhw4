@@ -8,6 +8,21 @@ INPUT_MEAN = [0.2788, 0.2657, 0.2629]
 INPUT_STD = [0.2064, 0.1944, 0.2252]
 
 
+
+class SinusoidalPositionalEncoding(nn.Module):
+    def __init__(self, d_model, max_len=500):
+        super().__init__()
+        pe = torch.zeros(max_len, d_model)
+        position = torch.arange(0, max_len).unsqueeze(1)
+        div_term = torch.exp(torch.arange(0, d_model, 2) * (-math.log(10000.0) / d_model))
+        pe[:, 0::2] = torch.sin(position * div_term)
+        pe[:, 1::2] = torch.cos(position * div_term)
+        self.register_buffer("pe", pe)
+
+    def forward(self, x):
+        return x + self.pe[:x.size(1)].unsqueeze(0)
+
+
 class MLPPlanner(nn.Module):
     def __init__(self, n_track: int = 10, n_waypoints: int = 3):
         super().__init__()
@@ -58,11 +73,11 @@ class TransformerPlanner(nn.Module):
         self,
         n_track: int = 10,
         n_waypoints: int = 3,
-        d_model: int = 64,
-        nhead: int = 4,
+        d_model: int = 128,
+        nhead: int = 8,
         num_encoder_layers: int = 2,
         num_decoder_layers: int = 2,
-        dim_feedforward: int = 128,
+        dim_feedforward: int = 256,
         dropout: float = 0.1,
     ):
         super().__init__()
@@ -71,16 +86,11 @@ class TransformerPlanner(nn.Module):
         self.n_waypoints = n_waypoints
         self.d_model = d_model
 
-        # [left, right, diff] → 6D input
+        # Input: [left, right, diff] → 6D
         self.input_proj = nn.Linear(6, d_model)
-
-        # Learnable positional encoding (2N, d_model)
-        self.positional_encoding = nn.Parameter(torch.randn(n_track * 2, d_model))
-
-        # Decoder queries (learned)
+        self.pos_enc_layer = SinusoidalPositionalEncoding(d_model)
         self.query_embed = nn.Embedding(n_waypoints, d_model)
 
-        # Transformer
         self.transformer = nn.Transformer(
             d_model=d_model,
             nhead=nhead,
@@ -93,43 +103,30 @@ class TransformerPlanner(nn.Module):
 
         self.output_proj = nn.Linear(d_model, 2)
 
-    def forward(
-        self,
-        track_left: torch.Tensor,   # (B, n_track, 2)
-        track_right: torch.Tensor,  # (B, n_track, 2)
-        **kwargs,
-    ) -> torch.Tensor:
+    def forward(self, track_left: torch.Tensor, track_right: torch.Tensor, **kwargs) -> torch.Tensor:
         B, N, _ = track_left.shape
 
-        # Normalize track by origin (ego-frame)
-        origin = track_left[:, 0:1, :]  # (B, 1, 2)
+        origin = track_left[:, 0:1, :]
         track_left = track_left - origin
         track_right = track_right - origin
         track_diff = track_left - track_right
 
-        # Concatenate: (B, N, 6)
+        # Input shape: (B, N, 6)
         track = torch.cat([track_left, track_right, track_diff], dim=-1)
+        track_feat = self.input_proj(track)  # (B, N, d_model)
 
-        # Project to d_model: (B, N, d_model)
-        track_feat = self.input_proj(track)
+        # Positional encoding
+        track_feat = self.pos_enc_layer(track_feat)
 
-        # Positional Encoding
-        pos_enc = self.positional_encoding[:N]
-        track_feat = track_feat + pos_enc[None, :, :]  # (B, N, d_model)
+        # Queries (waypoint predictions)
+        queries = self.query_embed.weight.unsqueeze(0).repeat(B, 1, 1)
 
-        # Prepare decoder queries (B, n_waypoints, d_model)
-        query_embed = self.query_embed.weight.unsqueeze(0).repeat(B, 1, 1)
-
-        # Transformer
+        # Transformer forward
         memory = self.transformer.encoder(track_feat)
-        output = self.transformer.decoder(query_embed, memory)
+        decoded = self.transformer.decoder(queries, memory)
 
-        # Project to (x, z)
-        waypoints = self.output_proj(output)  # (B, n_waypoints, 2)
-        return waypoints
-
-
-
+        return self.output_proj(decoded)  # (B, n_waypoints, 2)
+    
 
 
 class CNNPlanner(nn.Module):

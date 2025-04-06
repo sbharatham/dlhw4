@@ -2,6 +2,28 @@ import numpy as np
 import torch
 
 
+def custom_loss(
+    self, 
+    preds: torch.Tensor,
+    labels: torch.Tensor,
+    labels_mask: torch.Tensor,
+    mode: str = "directional",
+    lambda_lat: float = 0.5,
+) -> torch.Tensor:
+    labels_mask = labels_mask.float()
+    error = (preds - labels).abs()
+    error_masked = error * labels_mask.unsqueeze(-1)
+
+    lat_error = error_masked[..., 0].sum()
+    long_error = error_masked[..., 1].sum()
+    num_valid = labels_mask.sum().clamp(min=1)
+
+    lat_loss = lat_error / num_valid
+    long_loss = long_error / num_valid
+
+    return lambda_lat * lat_loss + (1.0 - lambda_lat) * long_loss
+
+
 class PlannerMetric:
     """
     Computes longitudinal and lateral errors for a planner

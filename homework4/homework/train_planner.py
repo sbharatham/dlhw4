@@ -7,11 +7,8 @@ import torch.optim as optim
 from torch.utils.data import DataLoader
 
 from datasets.road_dataset import load_data
-from models import TransformerPlanner, save_model
+from models import MLPPlanner, TransformerPlanner, CNNPlanner, save_model, load_model
 from metrics import PlannerMetric
-from models import MLPPlanner, TransformerPlanner, CNNPlanner, save_model
-from models import load_model
-
 
 
 def train_planner(
@@ -39,10 +36,12 @@ def train_planner(
     model = load_model(args.model_name).to(device)
     optimizer = optim.Adam(model.parameters(), lr=lr)
     criterion = nn.MSELoss(reduction="none")
+    metric = PlannerMetric()
 
     for epoch in range(num_epochs):
         model.train()
         train_loss = 0.0
+        metric.reset()
 
         for batch in train_loader:
             img = batch["image"].to(device)
@@ -51,19 +50,23 @@ def train_planner(
             mask = batch["waypoints_mask"].to(device)
 
             optimizer.zero_grad()
-            # Determine model type based on args
+
+            # Determine model type
             if isinstance(model, CNNPlanner):
                 output = model(img)
             else:
                 track_left = batch["track_left"].to(device)
-                track_right = batch["track_right"].to(device)
                 output = model(track_left=track_left, track_right=track_right)
 
-            loss = criterion(output, target)
-            loss = (loss * mask.unsqueeze(-1)).mean()
+            # Loss logic
+            if isinstance(model, TransformerPlanner):
+                loss = metric.weighted_mse_loss(output, target, mask, alpha=0.3)
+            else:
+                loss = criterion(output, target)
+                loss = (loss * mask.unsqueeze(-1)).mean()
+
             loss.backward()
             optimizer.step()
-
             train_loss += loss.item()
 
         train_loss /= len(train_loader)
@@ -71,6 +74,7 @@ def train_planner(
         # Validation
         model.eval()
         val_loss = 0.0
+        metric.reset()
 
         with torch.no_grad():
             for batch in val_loader:
@@ -79,31 +83,31 @@ def train_planner(
                 target = batch["waypoints"].to(device)
                 mask = batch["waypoints_mask"].to(device)
 
-                # Determine model type based on args
                 if isinstance(model, CNNPlanner):
                     output = model(img)
                 else:
                     track_left = batch["track_left"].to(device)
-                    track_right = batch["track_right"].to(device)
                     output = model(track_left=track_left, track_right=track_right)
 
-                loss = criterion(output, target)
-                loss = (loss * mask.unsqueeze(-1)).mean()
+                if isinstance(model, TransformerPlanner):
+                    loss = metric.weighted_mse_loss(output, target, mask, alpha=0.3)
+                else:
+                    loss = criterion(output, target)
+                    loss = (loss * mask.unsqueeze(-1)).mean()
+
                 val_loss += loss.item()
 
-            val_loss /= len(val_loader)
-
+        val_loss /= len(val_loader)
         print(f"Epoch {epoch + 1}/{num_epochs} - Train Loss: {train_loss:.4f}, Val Loss: {val_loss:.4f}")
 
     save_model(model)
-    print("✅ Planner model saved successfully!")
+    print("Planner model saved successfully!")
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--model_name", type=str, default="transformer_planner",
-                    choices=["mlp_planner", "transformer_planner", "cnn_planner"])
-
+                        choices=["mlp_planner", "transformer_planner", "cnn_planner"])
     parser.add_argument("--dataset_path", type=str, default="drive_data")
     parser.add_argument("--num_epochs", type=int, default=20)
     parser.add_argument("--lr", type=float, default=1e-3)
@@ -117,4 +121,3 @@ if __name__ == "__main__":
         batch_size=args.batch_size,
     )
     print("Training completed.")
-    print("Model saved successfully.")
