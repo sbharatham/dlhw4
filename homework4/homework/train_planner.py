@@ -9,6 +9,9 @@ from torch.utils.data import DataLoader
 from datasets.road_dataset import load_data
 from models import TransformerPlanner, save_model
 from metrics import PlannerMetric
+from models import MLPPlanner, TransformerPlanner, CNNPlanner, save_model
+from models import load_model
+
 
 
 def train_planner(
@@ -33,7 +36,7 @@ def train_planner(
         shuffle=False,
     )
 
-    model = TransformerPlanner().to(device)
+    model = load_model(args.model_name).to(device)
     optimizer = optim.Adam(model.parameters(), lr=lr)
     criterion = nn.MSELoss(reduction="none")
 
@@ -48,7 +51,14 @@ def train_planner(
             mask = batch["waypoints_mask"].to(device)
 
             optimizer.zero_grad()
-            output = model(img, track_right)  # 🟢 FIXED
+            # Determine model type based on args
+            if isinstance(model, CNNPlanner):
+                output = model(img)
+            else:
+                track_left = batch["track_left"].to(device)
+                track_right = batch["track_right"].to(device)
+                output = model(track_left=track_left, track_right=track_right)
+
             loss = criterion(output, target)
             loss = (loss * mask.unsqueeze(-1)).mean()
             loss.backward()
@@ -69,7 +79,14 @@ def train_planner(
                 target = batch["waypoints"].to(device)
                 mask = batch["waypoints_mask"].to(device)
 
-                output = model(img, track_right)  # 🟢 FIXED
+                # Determine model type based on args
+                if isinstance(model, CNNPlanner):
+                    output = model(img)
+                else:
+                    track_left = batch["track_left"].to(device)
+                    track_right = batch["track_right"].to(device)
+                    output = model(track_left=track_left, track_right=track_right)
+
                 loss = criterion(output, target)
                 loss = (loss * mask.unsqueeze(-1)).mean()
                 val_loss += loss.item()
@@ -84,6 +101,9 @@ def train_planner(
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
+    parser.add_argument("--model_name", type=str, default="transformer_planner",
+                    choices=["mlp_planner", "transformer_planner", "cnn_planner"])
+
     parser.add_argument("--dataset_path", type=str, default="drive_data")
     parser.add_argument("--num_epochs", type=int, default=20)
     parser.add_argument("--lr", type=float, default=1e-3)
