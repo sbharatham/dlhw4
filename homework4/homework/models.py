@@ -9,55 +9,46 @@ INPUT_STD = [0.2064, 0.1944, 0.2252]
 
 
 class MLPPlanner(nn.Module):
-    def __init__(
-        self,
-        n_track: int = 10,
-        n_waypoints: int = 3,
-    ):
-        """
-        Args:
-            n_track (int): number of points in each side of the track
-            n_waypoints (int): number of waypoints to predict
-        """
+    def __init__(self, n_track: int = 10, n_waypoints: int = 3):
         super().__init__()
-
         self.n_track = n_track
         self.n_waypoints = n_waypoints
-        input_dim = n_track * 4  # (n_track * 2 coords) * 2 sides
+
+        input_dim = n_track * 6  # left(2), right(2), diff(2) => total 6 per point
 
         self.model = nn.Sequential(
-            nn.Linear(input_dim, 128),
+            nn.Linear(input_dim, 256),
             nn.ReLU(),
+            nn.Dropout(0.2),
+
+            nn.Linear(256, 128),
+            nn.ReLU(),
+            nn.Dropout(0.2),
+
             nn.Linear(128, 64),
             nn.ReLU(),
+
             nn.Linear(64, n_waypoints * 2)
         )
 
-    def forward(
-        self,
-        track_left: torch.Tensor,
-        track_right: torch.Tensor,
-        **kwargs,
-    ) -> torch.Tensor:
-        """
-        Predicts waypoints from the left and right boundaries of the track.
+    def forward(self, track_left: torch.Tensor, track_right: torch.Tensor, **kwargs) -> torch.Tensor:
+        # Normalize: subtract ego-center (first left point)
+        origin = track_left[:, 0:1, :]  # shape (B, 1, 2)
+        track_left = track_left - origin
+        track_right = track_right - origin
 
-        Args:
-            track_left (torch.Tensor): shape (b, n_track, 2)
-            track_right (torch.Tensor): shape (b, n_track, 2)
+        # Add relative difference
+        track_diff = track_left - track_right
 
-        Returns:
-            torch.Tensor: future waypoints with shape (b, n_waypoints, 2)
-        """
-        x = torch.cat([track_left, track_right], dim=-1)  # (b, n_track, 4)
-        x = x.view(x.size(0), -1)  # (b, n_track * 4)
-        out = self.model(x)  # (b, n_waypoints * 2)
-        return out.view(-1, self.n_waypoints, 2)  # (b, n_waypoints, 2)
+        # Concatenate [left, right, diff] → (B, N, 6)
+        x = torch.cat([track_left, track_right, track_diff], dim=-1)
 
+        # Flatten → (B, N*6)
+        x = x.view(x.size(0), -1)
 
+        out = self.model(x)  # (B, N*2)
+        return out.view(-1, self.n_waypoints, 2)
 
-import torch
-import torch.nn as nn
 
 class TransformerPlanner(nn.Module):
     def __init__(
